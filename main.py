@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from typing import List
@@ -8,13 +9,14 @@ import re
 
 app = FastAPI(
     title="Bingo OCR API",
-    version="2.0.0"
+    version="3.0.0"
 )
 
+# Modelo da resposta
 class CartelaResponse(BaseModel):
     cartela: List[List[int]]
 
-# Intervalos válidos por coluna
+# Intervalos válidos por coluna B I N G O
 BINGO_RANGE = [
     (1, 15),   # B
     (16, 30),  # I
@@ -23,6 +25,9 @@ BINGO_RANGE = [
     (61, 75)   # O
 ]
 
+# =========================
+# OCR DE UMA ÚNICA CÉLULA
+# =========================
 def ocr_numero(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
@@ -36,30 +41,55 @@ def ocr_numero(img):
         config="--psm 10 -c tessedit_char_whitelist=0123456789"
     )
 
-    nums = re.findall(r"\d+", texto)
-    return int(nums[0]) if nums else None
+    # Remove qualquer coisa que não seja dígito
+    texto = re.sub(r"\D", "", texto)
 
-
-def corrigir_por_coluna(valor, coluna):
-    if valor is None:
-        return None
-
-    minimo, maximo = BINGO_RANGE[coluna]
-
-    # Valor já válido
-    if minimo <= valor <= maximo:
-        return valor
-
-    # Tentativa comum de correção
-    # Ex: 2 -> 25, 7 -> 57
-    for dezenas in [10, 20, 30, 40, 50, 60, 70]:
-        candidato = dezenas + valor
-        if minimo <= candidato <= maximo:
-            return candidato
+    if texto.isdigit():
+        return int(texto)
 
     return None
 
 
+# ======================================
+# CORREÇÃO USANDO REGRAS DO BINGO
+# ======================================
+def corrigir_por_coluna(valor, coluna, usados):
+    if not isinstance(valor, int):
+        return None
+
+    minimo, maximo = BINGO_RANGE[coluna]
+
+    candidatos = [valor]
+
+    # Correções visuais comuns do OCR
+    substituicoes = {
+        "2": ["5"],
+        "5": ["2"],
+        "3": ["8"],
+        "8": ["3", "6"],
+        "6": ["8"]
+    }
+
+    valor_str = str(valor)
+
+    for i, dig in enumerate(valor_str):
+        if dig in substituicoes:
+            for alt in substituicoes[dig]:
+                novo = valor_str[:i] + alt + valor_str[i+1:]
+                if novo.isdigit():
+                    candidatos.append(int(novo))
+
+    # Tentar todos os candidatos
+    for c in candidatos:
+        if minimo <= c <= maximo and c not in usados:
+            return c
+
+    return None
+
+
+# =========================
+# ENDPOINT PRINCIPAL
+# =========================
 @app.post("/ocr/cartela", response_model=CartelaResponse)
 async def ler_cartela(file: UploadFile = File(...)):
     image_bytes = await file.read()
@@ -71,11 +101,13 @@ async def ler_cartela(file: UploadFile = File(...)):
     cell_w = w // 5
 
     cartela = []
+    usados = set()
 
     for row in range(5):
         linha = []
         for col in range(5):
-            # FREE do meio
+
+            # FREE central
             if row == 2 and col == 2:
                 linha.append(0)
                 continue
@@ -88,9 +120,13 @@ async def ler_cartela(file: UploadFile = File(...)):
             cell = img[y1:y2, x1:x2]
 
             bruto = ocr_numero(cell)
-            corrigido = corrigir_por_coluna(bruto, col)
+            corrigido = corrigir_por_coluna(bruto, col, usados)
 
-            linha.append(corrigido if corrigido is not None else 0)
+            if corrigido is not None:
+                usados.add(corrigido)
+                linha.append(corrigido)
+            else:
+                linha.append(0)
 
         cartela.append(linha)
 

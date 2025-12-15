@@ -1,18 +1,44 @@
-
 from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 import cv2
 import pytesseract
 import numpy as np
 import re
+import os
 
+# =========================
+# APP
+# =========================
 app = FastAPI(
     title="Bingo OCR API",
     version="3.0.0"
 )
 
-# Modelo da resposta
+# =========================
+# CORS POR AMBIENTE
+# =========================
+ENV = os.getenv("ENV", "dev")
+
+if ENV == "prod":
+    allow_origins = [
+      "https://bingo-certo-front.vercel.app"
+    ]
+else:
+    allow_origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =========================
+# MODELO DE RESPOSTA
+# =========================
 class CartelaResponse(BaseModel):
     cartela: List[List[int]]
 
@@ -41,27 +67,20 @@ def ocr_numero(img):
         config="--psm 10 -c tessedit_char_whitelist=0123456789"
     )
 
-    # Remove qualquer coisa que não seja dígito
     texto = re.sub(r"\D", "", texto)
 
-    if texto.isdigit():
-        return int(texto)
+    return int(texto) if texto.isdigit() else None
 
-    return None
-
-
-# ======================================
-# CORREÇÃO USANDO REGRAS DO BINGO
-# ======================================
+# =========================
+# CORREÇÃO POR REGRAS DO BINGO
+# =========================
 def corrigir_por_coluna(valor, coluna, usados):
     if not isinstance(valor, int):
         return None
 
     minimo, maximo = BINGO_RANGE[coluna]
-
     candidatos = [valor]
 
-    # Correções visuais comuns do OCR
     substituicoes = {
         "2": ["5"],
         "5": ["2"],
@@ -75,17 +94,15 @@ def corrigir_por_coluna(valor, coluna, usados):
     for i, dig in enumerate(valor_str):
         if dig in substituicoes:
             for alt in substituicoes[dig]:
-                novo = valor_str[:i] + alt + valor_str[i+1:]
+                novo = valor_str[:i] + alt + valor_str[i + 1:]
                 if novo.isdigit():
                     candidatos.append(int(novo))
 
-    # Tentar todos os candidatos
     for c in candidatos:
         if minimo <= c <= maximo and c not in usados:
             return c
 
     return None
-
 
 # =========================
 # ENDPOINT PRINCIPAL
@@ -112,10 +129,8 @@ async def ler_cartela(file: UploadFile = File(...)):
                 linha.append(0)
                 continue
 
-            y1 = row * cell_h
-            y2 = (row + 1) * cell_h
-            x1 = col * cell_w
-            x2 = (col + 1) * cell_w
+            y1, y2 = row * cell_h, (row + 1) * cell_h
+            x1, x2 = col * cell_w, (col + 1) * cell_w
 
             cell = img[y1:y2, x1:x2]
 
@@ -131,4 +146,4 @@ async def ler_cartela(file: UploadFile = File(...)):
         cartela.append(linha)
 
     return {"cartela": cartela}
-    
+

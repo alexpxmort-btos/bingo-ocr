@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from typing import List
@@ -9,16 +8,25 @@ import re
 
 app = FastAPI(
     title="Bingo OCR API",
-    description="API para leitura de cartela de bingo 5x5 via imagem",
-    version="1.0.0"
+    version="2.0.0"
 )
 
 class CartelaResponse(BaseModel):
     cartela: List[List[int]]
 
+# Intervalos válidos por coluna
+BINGO_RANGE = [
+    (1, 15),   # B
+    (16, 30),  # I
+    (31, 45),  # N
+    (46, 60),  # G
+    (61, 75)   # O
+]
+
 def ocr_numero(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
     _, thresh = cv2.threshold(
         gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
@@ -29,14 +37,30 @@ def ocr_numero(img):
     )
 
     nums = re.findall(r"\d+", texto)
-    return int(nums[0]) if nums else 0
+    return int(nums[0]) if nums else None
 
-@app.post(
-    "/ocr/cartela",
-    response_model=CartelaResponse,
-    summary="Ler cartela de bingo 5x5",
-    tags=["OCR"]
-)
+
+def corrigir_por_coluna(valor, coluna):
+    if valor is None:
+        return None
+
+    minimo, maximo = BINGO_RANGE[coluna]
+
+    # Valor já válido
+    if minimo <= valor <= maximo:
+        return valor
+
+    # Tentativa comum de correção
+    # Ex: 2 -> 25, 7 -> 57
+    for dezenas in [10, 20, 30, 40, 50, 60, 70]:
+        candidato = dezenas + valor
+        if minimo <= candidato <= maximo:
+            return candidato
+
+    return None
+
+
+@app.post("/ocr/cartela", response_model=CartelaResponse)
 async def ler_cartela(file: UploadFile = File(...)):
     image_bytes = await file.read()
     img_array = np.frombuffer(image_bytes, np.uint8)
@@ -51,6 +75,11 @@ async def ler_cartela(file: UploadFile = File(...)):
     for row in range(5):
         linha = []
         for col in range(5):
+            # FREE do meio
+            if row == 2 and col == 2:
+                linha.append(0)
+                continue
+
             y1 = row * cell_h
             y2 = (row + 1) * cell_h
             x1 = col * cell_w
@@ -58,12 +87,12 @@ async def ler_cartela(file: UploadFile = File(...)):
 
             cell = img[y1:y2, x1:x2]
 
-            if row == 2 and col == 2:
-                linha.append(0)
-            else:
-                linha.append(ocr_numero(cell))
+            bruto = ocr_numero(cell)
+            corrigido = corrigir_por_coluna(bruto, col)
+
+            linha.append(corrigido if corrigido is not None else 0)
 
         cartela.append(linha)
 
     return {"cartela": cartela}
-              
+    
